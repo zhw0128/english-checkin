@@ -101,28 +101,62 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
   }
 
   async function startRec() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new MediaRecorder(stream);
-    setChunks([]);
-    mr.ondataavailable = (e) => setChunks((prev) => [...prev, e.data]);
-    mr.onstop = async () => {
-      const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-      const file = new File([blob], `reading-${Date.now()}.webm`, {
-        type: blob.type,
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mr = new MediaRecorder(stream);
+  setChunks([]);
+
+  mr.ondataavailable = (e) => setChunks((prev) => [...prev, e.data]);
+
+  mr.onstop = async () => {
+    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+
+    // ✅ 匿名或登录用户的唯一ID（解决 user.id 报 null）
+    const uploaderId =
+      user?.id ??
+      (localStorage.getItem("cid") ||
+        (() => {
+          const cid = `anon_${Math.random().toString(36).slice(2, 8)}`;
+          localStorage.setItem("cid", cid);
+          return cid;
+        })());
+
+    // ✅ 文件名（带时间戳和随机码，防止 409 冲突）
+    const ts = new Date();
+    const yyyy = ts.getFullYear();
+    const mm = String(ts.getMonth() + 1).padStart(2, "0");
+    const dd = String(ts.getDate()).padStart(2, "0");
+    const hh = String(ts.getHours()).padStart(2, "0");
+    const mi = String(ts.getMinutes()).padStart(2, "0");
+    const ss = String(ts.getSeconds()).padStart(2, "0");
+    const rnd = Math.random().toString(36).slice(2, 6);
+    const fileName = `${yyyy}${mm}${dd}_${hh}${mi}${ss}_${rnd}.webm`;
+
+    // ✅ 上传路径
+    const lessonSlug = String(lesson?.id ?? "lesson");
+    const path = `${lessonSlug}/${uploaderId}/${fileName}`;
+
+    // ✅ 上传到 Supabase 的 recordings bucket
+    const { data, error } = await supabase.storage
+      .from("recordings")
+      .upload(path, blob, {
+        cacheControl: "3600",
+        contentType: "audio/webm",
+        upsert: false,
       });
-      const path = `user-${user.id}/${file.name}`;
-      await supabase.storage.from('readings').upload(path, file);
-      await supabase.from('readings').insert({
-        user_id: user.id,
-        lesson_id: lesson.id,
-        file_path: `readings/${path}`,
-      });
-      alert('录音已上传 ✅');
-    };
-    mr.start();
-    setRec(mr);
-    setRecording(true);
-  }
+
+    if (error) {
+      console.error("Upload error:", error);
+      alert(`上传失败：${error.message}`);
+    } else {
+      alert("录音上传成功 ✅");
+    }
+  };
+
+  mr.start();
+  setRec(mr);
+  setRecording(true);
+}
+
 
   function stopRec() {
     rec?.stop();
