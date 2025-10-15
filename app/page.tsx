@@ -71,19 +71,23 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
   const [chunks, setChunks] = useState<Blob[]>([]);
 
   useEffect(() => {
-    if (!lesson.audio_path) return;
+  // 🎧 音频链接
+  if (lesson.audio_path) {
     const [bucket, ...p] = lesson.audio_path.split('/');
-    supabase.storage
-      .from(bucket)
-      .createSignedUrl(p.join('/'), 3600)
-      .then(({ data }) => setAudioUrl(data?.signedUrl || ''));
-  }, [lesson.audio_path]);
-  
+    const filePath = p.join('/');
+    const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    setAudioUrl(data.publicUrl || '');
+  }
+
+  // 📄 PDF 链接
   if (lesson.doc_path) {
-  const [dbucket, ...dp] = lesson.doc_path.split('/');
-  supabase.storage.from(dbucket).createSignedUrl(dp.join('/'), 3600)
-    .then(({ data }) => setDocUrl(data?.signedUrl || ''));
-}
+    const [dbucket, ...dp] = lesson.doc_path.split('/');
+    const filePath = dp.join('/');
+    const { data } = supabase.storage.from(dbucket).getPublicUrl(filePath);
+    setDocUrl(data.publicUrl || '');
+  }
+}, [lesson.audio_path, lesson.doc_path]);
+
 
   async function markListen() {
     if (!user) return alert('请先登录');
