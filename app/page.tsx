@@ -108,9 +108,10 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
   mr.ondataavailable = (e) => setChunks((prev) => [...prev, e.data]);
 
   mr.onstop = async () => {
+  try {
     const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
 
-    // ✅ 匿名或登录用户的唯一ID（解决 user.id 报 null）
+    // ✅ 匿名或登录用户的唯一 ID（解决 user.id 报 null）
     const uploaderId =
       user?.id ??
       (localStorage.getItem("cid") ||
@@ -120,37 +121,40 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
           return cid;
         })());
 
-    // ✅ 文件名（带时间戳和随机码，防止 409 冲突）
-    const ts = new Date();
-    const yyyy = ts.getFullYear();
-    const mm = String(ts.getMonth() + 1).padStart(2, "0");
-    const dd = String(ts.getDate()).padStart(2, "0");
-    const hh = String(ts.getHours()).padStart(2, "0");
-    const mi = String(ts.getMinutes()).padStart(2, "0");
-    const ss = String(ts.getSeconds()).padStart(2, "0");
-    const rnd = Math.random().toString(36).slice(2, 6);
-    const fileName = `${yyyy}${mm}${dd}_${hh}${mi}${ss}_${rnd}.webm`;
+    // ✅ 上传路径：recordings/<uploaderId>/<时间戳>.webm
+    const path = `${uploaderId}/${Date.now()}.webm`;
 
-    // ✅ 上传路径
-    const lessonSlug = String(lesson?.id ?? "lesson");
-    const path = `${lessonSlug}/${uploaderId}/${fileName}`;
+    // ✅ 上传到 recordings bucket
+    const { error: upErr } = await supabase
+      .storage
+      .from('recordings')
+      .upload(path, blob, { upsert: true });
 
-    // ✅ 上传到 Supabase 的 recordings bucket
-    const { data, error } = await supabase.storage
-      .from("recordings")
-      .upload(path, blob, {
-        cacheControl: "3600",
-        contentType: "audio/webm",
-        upsert: false,
-      });
-
-    if (error) {
-      console.error("Upload error:", error);
-      alert(`上传失败：${error.message}`);
-    } else {
-      alert("录音上传成功 ✅");
+    if (upErr) {
+      console.error('upload error:', upErr);
+      alert('上传失败：' + upErr.message);
+      return;
     }
-  };
+
+    // ✅ 已登录才写数据库记录
+    if (user?.id) {
+      const { error: dbErr } = await supabase.from('readings').insert({
+        user_id: user.id,
+        lesson_id: lesson.id,
+        file_path: `recordings/${path}`,
+      });
+      if (dbErr) console.warn('db insert warning:', dbErr);
+    }
+
+    alert('录音上传成功 ✅');
+  } catch (e: any) {
+    console.error(e);
+    alert('出错：' + (e?.message || String(e)));
+  } finally {
+    setChunks([]);
+  }
+};
+
 
   mr.start();
   setRec(mr);
