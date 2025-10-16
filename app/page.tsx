@@ -1,3 +1,12 @@
+function getCid() {
+  let cid = localStorage.getItem('cid');
+  if (!cid) {
+    cid = `anon_${Math.random().toString(36).slice(2, 8)}`;
+    localStorage.setItem('cid', cid);
+  }
+  return cid;
+}
+
 'use client';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
@@ -12,6 +21,7 @@ type Lesson = {
 };
 
 export default function Home() {
+  const [listened, setListened] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,6 +75,18 @@ export default function Home() {
 
 function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
   const [audioUrl, setAudioUrl] = useState('');
+    useEffect(() => {
+    const cid = getCid();
+    supabase
+      .from('listens')
+      .select('id', { head: true, count: 'exact' }) // 只返回数量，不取内容
+      .eq('lesson_id', lesson.id)
+      .eq('cid', cid)
+      .then(({ count, error }) => {
+        if (!error && (count ?? 0) > 0) setListened(true);
+      });
+  }, [lesson.id]);
+
   const [docUrl, setDocUrl] = useState('');
   const [recording, setRecording] = useState(false);
   const [rec, setRec] = useState<MediaRecorder | null>(null);
@@ -78,6 +100,9 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
     const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
     setAudioUrl(data.publicUrl || '');
   }
+{listened && (
+  <p style={{ color: '#16a34a', marginTop: 8 }}>已完成听读 ✅</p>
+)}
 
   // 📄 PDF 链接
   if (lesson.doc_path) {
@@ -90,15 +115,27 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
 
 
   async function markListen() {
-    if (!user) return alert('请先登录');
-    const today = new Date().toISOString().slice(0, 10);
-    await supabase.from('listens').insert({
-      user_id: user.id,
-      lesson_id: lesson.id,
-      listened_at: today,
-    });
-    alert('听完已记录 ✅');
+  try {
+    const cid = getCid();
+
+    // 用 upsert，配合上面的唯一索引 (lesson_id,cid) 防重复
+    const { error } = await supabase
+      .from('listens')
+      .upsert(
+        [{ lesson_id: lesson.id, cid }],
+        { onConflict: 'lesson_id,cid' }
+      );
+
+    if (error) {
+      console.warn('markListen warn:', error);
+      // 不阻止 UI，避免学生体验受影响
+    }
+
+    setListened(true);
+  } catch (e: any) {
+    console.error(e);
   }
+}
 
   async function startRec() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -155,11 +192,11 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
     <div>
       {audioUrl ? (
         <audio
-          controls
-          src={audioUrl}
-          onEnded={markListen}
-          style={{ width: '100%' }}
-        />
+  controls
+  src={audioUrl}
+  onEnded={() => markListened(lesson.id)}
+/>
+
       ) : (
         <em>暂无音频</em>
       )}
