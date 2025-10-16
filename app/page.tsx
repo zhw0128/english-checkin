@@ -108,52 +108,36 @@ function LessonCard({ lesson, user }: { lesson: Lesson; user: any }) {
   mr.ondataavailable = (e) => setChunks((prev) => [...prev, e.data]);
 
   mr.onstop = async () => {
+  const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+  const file = new File([blob], `reading-${Date.now()}.webm`, { type: blob.type });
+
+  // 匿名唯一ID（存在 localStorage）
+  const cid =
+    localStorage.getItem('cid') ??
+    (() => {
+      const v = `anon_${Math.random().toString(36).slice(2, 8)}`;
+      localStorage.setItem('cid', v);
+      return v;
+    })();
+
+  // 文件路径结构： recordings/anon_xxx/<lesson.id>/<时间戳>.webm
+  const lessonId = lesson?.id ?? 'unknown';
+  const path = `anon_${cid}/${lessonId}/${Date.now()}.webm`;
+
   try {
-    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-
-    // ✅ 匿名或登录用户的唯一 ID（解决 user.id 报 null）
-    const uploaderId =
-      user?.id ??
-      (localStorage.getItem("cid") ||
-        (() => {
-          const cid = `anon_${Math.random().toString(36).slice(2, 8)}`;
-          localStorage.setItem("cid", cid);
-          return cid;
-        })());
-
-    // ✅ 上传路径：recordings/<uploaderId>/<时间戳>.webm
-    const path = `${uploaderId}/${Date.now()}.webm`;
-
-    // ✅ 上传到 recordings bucket
-    const { error: upErr } = await supabase
-      .storage
+    const { error } = await supabase.storage
       .from('recordings')
-      .upload(path, blob, { upsert: true });
+      .upload(path, file, { contentType: 'audio/webm' });
 
-    if (upErr) {
-      console.error('upload error:', upErr);
-      alert('上传失败：' + upErr.message);
-      return;
-    }
-
-    // ✅ 已登录才写数据库记录
-    if (user?.id) {
-      const { error: dbErr } = await supabase.from('readings').insert({
-        user_id: user.id,
-        lesson_id: lesson.id,
-        file_path: `recordings/${path}`,
-      });
-      if (dbErr) console.warn('db insert warning:', dbErr);
-    }
-
-    alert('录音上传成功 ✅');
-  } catch (e: any) {
-    console.error(e);
-    alert('出错：' + (e?.message || String(e)));
-  } finally {
-    setChunks([]);
+    if (error) throw error;
+    alert('录音已上传 ✅');
+  } catch (err) {
+    console.error('上传失败:', err);
+    alert('上传失败 ❌');
   }
 };
+
+
 
 
   mr.start();
