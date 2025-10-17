@@ -1,19 +1,33 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient'; // ← 确认你的实际路径（@/lib 或 @/utils）
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { supabase } from '@/lib/supabaseClient'; // ← 如你的路径是 "@/utils/..."，这里改一下
 
-type Lesson = {
-  id: number;
-  title: string;
-  description: string | null;
-  audio_path: string | null;  // 形如 "lessons/Level3Reading1A.mp3"
-  doc_path: string | null;    // 形如 "lessons/1A.pdf"
-  published: boolean;
+// ==================== 配置 ====================
+const LESSONS_BUCKET = 'lessons';      // 你放音频/PDF的 bucket 名
+const RECORDINGS_BUCKET = 'recordings'; // 学生录音上传的 bucket 名
+const LIST_PREFIX = '';                 // 列出 lessons 根目录；如你用子文件夹，可改成 '2025-10/'
+const AUTO_REFRESH_MS = 60_000;         // 自动刷新间隔（毫秒）
+// ============================================
+
+// 支持的音频后缀
+const AUDIO_RE = /\.(mp3|m4a|webm|wav|ogg)$/i;
+const PDF_RE = /\.pdf$/i;
+
+type StorageObj = {
+  name: string;         // 文件名（不含路径）
+  id?: string;          // supabase sdk 没有 id，这里不用
+  updated_at?: string;  // 可能用不到
 };
 
-/** 设备匿名 ID（保存在 localStorage） */
+type LessonItem = {
+  key: string;          // 课的“基名”（文件名去后缀）
+  audioUrl: string;     // 公网音频链接
+  pdfUrl: string;       // 公网PDF链接
+};
+
 function getCid() {
+  if (typeof window === 'undefined') return '';
   let cid = localStorage.getItem('cid');
   if (!cid) {
     cid = `anon_${Math.random().toString(36).slice(2, 8)}`;
@@ -22,41 +36,87 @@ function getCid() {
   return cid;
 }
 
-export default function Home() {
-  const [lessons, setLessons] = useState<Lesson[]>([]);
+export default function Page() {
+  const [items, setItems] = useState<LessonItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 加载 lessons bucket 里的文件并配对
+  const loadFromStorage = async () => {
+    setLoading(true);
+
+    // 列出指定目录（Supabase Storage 不支持递归；如需子目录，请把 LIST_PREFIX 改成对应子目录）
+    const { data, error } = await supabase
+      .storage
+      .from(LESSONS_BUCKET)
+      .list(LIST_PREFIX, { limit: 1000 });
+
+    if (error) {
+      console.error('list lessons error:', error);
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    const files = (data || []) as StorageObj[];
+
+    // 用“基名”配对音频与PDF
+    const map = new Map<string, { audio?: string; pdf?: string }>();
+    for (const f of files) {
+      const name = f.name;
+      const base = name.replace(/\.(mp3|m4a|webm|wav|ogg|pdf)$/i, '');
+      const entry = map.get(base) || {};
+      if (AUDIO_RE.test(name)) entry.audio = name;
+      if (PDF_RE.test(name)) entry.pdf = name;
+      map.set(base, entry);
+    }
+
+    // 生成可渲染数据（转成 Public URL）
+    const list: LessonItem[] = [];
+    for (const [base, v] of map.entries()) {
+      const audioUrl = v.audio
+        ? supabase.storage.from(LESSONS_BUCKET).getPublicUrl(`${LIST_PREFIX}${v.audio}`).data.publicUrl
+        : '';
+      const pdfUrl = v.pdf
+        ? supabase.storage.from(LESSONS_BUCKET).getPublicUrl(`${LIST_PREFIX}${v.pdf}`).data.publicUrl
+        : '';
+      if (audioUrl || pdfUrl) {
+        list.push({ key: base, audioUrl, pdfUrl });
+      }
+    }
+
+    // 可按名称排序（可改成时间排序）
+    list.sort((a, b) => a.key.localeCompare(b.key));
+    setItems(list);
+    setLoading(false);
+  };
 
   useEffect(() => {
-    supabase
-      .from('lessons')
-      .select('*')
-      .eq('published', true)
-      .then(({ data, error }) => {
-        if (error) console.error(error);
-        setLessons(data || []);
-        setLoading(false);
-      });
+    loadFromStorage();
+    // 每60秒自动刷新
+    timer.current = setInterval(loadFromStorage, AUTO_REFRESH_MS);
+    return () => {
+      if (timer.current) clearInterval(timer.current);
+    };
   }, []);
 
   return (
-    <main style={{ maxWidth: 800, margin: '0 auto', padding: 16 }}>
-      <h1>🎧 English Listening Check-in</h1>
+    <main style={{ maxWidth: 860, margin: '0 auto', padding: 16 }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>🎧 English Listening Check-in</h1>
+        <button onClick={loadFromStorage}>🔄 刷新</button>
+      </header>
 
-      {loading && <p>正在加载课程...</p>}
+      {loading && <p>正在加载课件...</p>}
+      {!loading && items.length === 0 && (
+        <p>还没有找到课件文件。请把 <code>.mp3/.m4a/.webm</code> 与 <code>.pdf</code> 同名文件上传到 <b>{LESSONS_BUCKET}/</b> 根目录。</p>
+      )}
+
       <ul style={{ listStyle: 'none', padding: 0 }}>
-        {lessons.map((lsn) => (
-          <li
-            key={lsn.id}
-            style={{
-              border: '1px solid #ddd',
-              borderRadius: 8,
-              marginTop: 16,
-              padding: 16,
-            }}
-          >
-            <h3>{lsn.title}</h3>
-            {lsn.description && <p>{lsn.description}</p>}
-            <LessonCard lesson={lsn} />
+        {items.map(item => (
+          <li key={item.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginTop: 16 }}>
+            <h3 style={{ margin: '0 0 8px' }}>{item.key}</h3>
+            <LessonCard lesson={item} />
           </li>
         ))}
       </ul>
@@ -64,94 +124,95 @@ export default function Home() {
   );
 }
 
-function LessonCard({ lesson }: { lesson: Lesson }) {
-  const [audioUrl, setAudioUrl] = useState('');
-  const [docUrl, setDocUrl] = useState('');
+function LessonCard({ lesson }: { lesson: LessonItem }) {
   const [recording, setRecording] = useState(false);
   const [rec, setRec] = useState<MediaRecorder | null>(null);
   const [chunks, setChunks] = useState<Blob[]>([]);
   const [listened, setListened] = useState(false);
 
-  /** 加载音频/PDF 公网地址 */
+  // 进入时检查本设备是否已完成（本地 + 可选远端）
   useEffect(() => {
-    // 音频
-    if (lesson.audio_path) {
-      const [bucket, ...p] = lesson.audio_path.split('/');
-      const filePath = p.join('/');
-      const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-      setAudioUrl(data.publicUrl || '');
-    } else {
-      setAudioUrl('');
+    // 本地标记（设备级✅）
+    const localDone = localStorage.getItem(`done:${lesson.key}`);
+    if (localDone === '1') {
+      setListened(true);
+      return;
     }
 
-    // PDF
-    if (lesson.doc_path) {
-      const [dbucket, ...dp] = lesson.doc_path.split('/');
-      const filePath = dp.join('/');
-      const { data } = supabase.storage.from(dbucket).getPublicUrl(filePath);
-      setDocUrl(data.publicUrl || '');
-    } else {
-      setDocUrl('');
-    }
-  }, [lesson.audio_path, lesson.doc_path]);
-
-  /** 进页面时检查这台设备是否已“听完” */
-  useEffect(() => {
+    // （可选）如果你已经创建了 public.listens(cid text, lesson_key text unique(cid,lesson_key))，
+    // 这里尝试查库；失败不会影响页面。
     const cid = getCid();
     supabase
       .from('listens')
-      .select('id', { head: true, count: 'exact' }) // 只要数量
-      .eq('lesson_id', lesson.id)
+      .select('id', { head: true, count: 'exact' })
       .eq('cid', cid)
+      .eq('lesson_key', lesson.key)
       .then(({ count, error }) => {
         if (!error && (count ?? 0) > 0) setListened(true);
-      });
-  }, [lesson.id]);
+      })
+      .catch(() => {});
+  }, [lesson.key]);
 
-  /** 播放结束，打点已完成（去重 upsert） */
-  async function markListen() {
+  // 播放完自动打✅（本地 + 可选写库）
+  const markListen = async () => {
+    setListened(true);
+    localStorage.setItem(`done:${lesson.key}`, '1');
+
+    // 可选：写入 public.listens（如果表和策略都准备好了）
     try {
       const cid = getCid();
-      const { error } = await supabase
+      await supabase
         .from('listens')
-        .upsert(
-          [{ lesson_id: lesson.id, cid }],
-          { onConflict: 'lesson_id,cid' } // 需要你在 listens 表上建唯一索引 (lesson_id,cid)
-        );
-      if (error) console.warn('markListen warn:', error);
-      setListened(true);
-    } catch (e) {
-      console.error(e);
+        .upsert([{ cid, lesson_key: lesson.key }], { onConflict: 'cid,lesson_key' });
+    } catch {
+      // 不阻塞UI
     }
-  }
+  };
 
-  /** 开始录音 */
+  // ======== 录音并上传（移动端兼容）========
   async function startRec() {
+    const prefer =
+      (typeof MediaRecorder !== 'undefined' &&
+        (MediaRecorder as any).isTypeSupported?.('audio/webm;codecs=opus'))
+        ? 'audio/webm;codecs=opus'
+        : ((MediaRecorder as any).isTypeSupported?.('audio/mp4') ? 'audio/mp4' : '');
+
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new MediaRecorder(stream);
+    const mr = prefer ? new MediaRecorder(stream, { mimeType: prefer }) : new MediaRecorder(stream);
+
     setChunks([]);
-    mr.ondataavailable = (e) => setChunks((prev) => [...prev, e.data]);
+    mr.ondataavailable = (e) => setChunks(prev => [...prev, e.data]);
 
     mr.onstop = async () => {
-      const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
-      const file = new File([blob], `reading-${Date.now()}.webm`, {
-        type: blob.type,
-      });
+      const mime = mr.mimeType || prefer || 'audio/webm';
+      const blob = new Blob(chunks, { type: mime });
 
-      const cid = getCid(); // 已是 anon_xxx
-      // 路径建议：<cid>/<lesson_id>/<timestamp>.webm
-      const path = `${cid}/${lesson.id}/${Date.now()}.webm`;
+      if (!blob || blob.size < 1024) {
+        alert('录音数据为空或太短，请多录几秒再试');
+        return;
+      }
+
+      const ext = mime.includes('mp4') ? 'm4a'
+                : mime.includes('mpeg') ? 'mp3'
+                : 'webm';
+
+      const file = new File([blob], `reading-${Date.now()}.${ext}`, { type: mime });
+      const cid = getCid();
+      const path = `${cid}/${encodeURIComponent(lesson.key)}/${Date.now()}.${ext}`;
 
       try {
-        const { error } = await supabase.storage
-          .from('recordings')
-          .upload(path, file, { contentType: 'audio/webm' });
+        const { error } = await supabase
+          .storage
+          .from(RECORDINGS_BUCKET)
+          .upload(path, file, { contentType: file.type });
 
         if (error) throw error;
         alert('录音已上传 ✅');
-      } catch (err) {
+      } catch (err: any) {
         console.error('上传失败:', err);
-        alert('上传失败 ❌');
+        alert('上传失败：' + (err?.message || '未知错误'));
+      } finally {
+        setChunks([]);
       }
     };
 
@@ -160,7 +221,6 @@ function LessonCard({ lesson }: { lesson: Lesson }) {
     setRecording(true);
   }
 
-  /** 停止录音 */
   function stopRec() {
     rec?.stop();
     setRecording(false);
@@ -168,8 +228,8 @@ function LessonCard({ lesson }: { lesson: Lesson }) {
 
   return (
     <div>
-      {audioUrl ? (
-        <audio controls src={audioUrl} onEnded={markListen} />
+      {lesson.audioUrl ? (
+        <audio controls src={lesson.audioUrl} onEnded={markListen} />
       ) : (
         <em>暂无音频</em>
       )}
@@ -178,9 +238,9 @@ function LessonCard({ lesson }: { lesson: Lesson }) {
         <p style={{ color: '#16a34a', marginTop: 8 }}>已完成听读 ✅</p>
       )}
 
-      {docUrl && (
+      {lesson.pdfUrl && (
         <p style={{ marginTop: 8 }}>
-          <a href={docUrl} target="_blank" rel="noreferrer">
+          <a href={lesson.pdfUrl} target="_blank" rel="noreferrer">
             📄 查看讲义（PDF）
           </a>
         </p>
