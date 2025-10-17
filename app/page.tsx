@@ -131,27 +131,25 @@ function LessonCard({ lesson }: { lesson: LessonItem }) {
   const [listened, setListened] = useState(false);
 
   // 进入时检查本设备是否已完成（本地 + 可选远端）
-  useEffect(() => {
-    // 本地标记（设备级✅）
-    const localDone = localStorage.getItem(`done:${lesson.key}`);
-    if (localDone === '1') {
-      setListened(true);
-      return;
-    }
+useEffect(() => {
+  const cid = getCid();
 
-    // （可选）如果你已经创建了 public.listens(cid text, lesson_key text unique(cid,lesson_key))，
-    // 这里尝试查库；失败不会影响页面。
-    const cid = getCid();
-    supabase
-      .from('listens')
-      .select('id', { head: true, count: 'exact' })
-      .eq('cid', cid)
-      .eq('lesson_key', lesson.key)
-      .then(({ count, error }) => {
-        if (!error && (count ?? 0) > 0) setListened(true);
-      })
-      .catch(() => {});
-  }, [lesson.key]);
+  (async () => {
+    try {
+      const { count, error } = await supabase
+        .from('listens')
+        .select('id', { head: true, count: 'exact' })
+        // 如果你表里是 lesson_key，就用 lesson.key；如果你是 lesson_id 就用 lesson.id
+        .eq('lesson_key', lesson.key)
+        .eq('cid', cid);
+
+      if (!error && (count ?? 0) > 0) setListened(true);
+    } catch {
+      // 忽略远端错误，不影响本地UI
+    }
+  })();
+}, [lesson.key]);
+
 
   // 播放完自动打✅（本地 + 可选写库）
   const markListen = async () => {
